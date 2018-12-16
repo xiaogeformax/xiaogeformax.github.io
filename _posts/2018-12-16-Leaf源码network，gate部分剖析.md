@@ -1,104 +1,240 @@
-## 建立一个raymarching
-![图片.png](https://upload-images.jianshu.io/upload_images/10954538-c4e61b5594c7e562.png?imageMogr2/auto-orient/strip%7CimageView2/2/w/1240)
-[shadertoy 查看][1]
+#Leaf源码network，gate部分剖析
+
+##Leaf 简介
+
+**Leaf** 是一个由 Go 语言（golang）编写的开发效率和执行效率并重的开源游戏服务器框架。Leaf 适用于各类游戏服务器的开发，包括 H5（HTML5）游戏服务器。
+
+## Gate 模块
+
+Gate模块是网关模块，负责游戏客户端的接入。是在接入时候创建一个Agent，把socket流变成msg，分发给相应的模块。
+
+### Agent 接口
+![在这里插入图片描述](https://img-blog.csdnimg.cn/20181216180758615.png?)
+
+### Gate下面的run函数
+Run函数会分发消息
+![在这里插入图片描述](https://img-blog.csdnimg.cn/20181216181123443.png?)
+
+## NetWork 模块
+NetWork 模块是网络相关的，使用 TCP 和 WebSocket 协议，可自定义消息格式。
+下面来看下network的源码把，主要分析Tcp部分，Webwork部分同理，暂不分析了。
+
+### Coon 接口
+由于同时可以Websocket和Tcp两种协议，然后这里使用了同一个接口。这里对消息的读写，关闭，删除。还有远程网络地址。
+
+![在这里插入图片描述](https://img-blog.csdnimg.cn/20181216182041268.png?)
+
+在TcpCoon里面有每个函数的具体实现。
 
 
-先解释一波 **raymarching**, Raymatching是一种计算机图形渲染方式，但它的潜力仍未被完全发掘。Raymatching一般用于渲染体积纹理、高度图以及解析曲面。如今，大多数游戏用OpenGL或Direct3D（DirectX）来使用显卡的硬件加速器绘制多边形，电脑可以以每秒60帧的速度渲染几百万个三角面。虽然Raymatching没有那些图形API那么出名，但它可以仅用两个三角面实现无与伦比的细节。
+## tcp_msg 脚本
+这里主要是对于Tcp的具体消息进行封装，分析。
+![在这里插入图片描述](https://img-blog.csdnimg.cn/20181216183410946.png)
+里面有设置消息长度，同时对于数据的精度也有处理，有math.MaxUint8等不同数据精度的数据处理。
+![在这里插入图片描述](https://img-blog.csdnimg.cn/20181216183907552.png)
 
-## 创建一个camera
-我们需要去定义camera的origin,target,和up 就是定义摄像机的起源,目标位置,还有就是定义向上的位置。
+之前的Conn的read的write的读写消息的部分也具体放在了tcp_msg里面了。同时也针对了大小端进行了处理，对数据的长度做出了限定。
+```go
+func (p *MsgParser) Read(conn *TCPConn) ([]byte, error) {
+    var b [4]byte
+    bufMsgLen := b[:p.lenMsgLen]
 
-    vec3 cameraOrigin = vec3(2.0, 3.0, 2.0);
-    vec3 cameraTarget = vec3(0.0, 0.0, 0.0);
-    vec3 upDirection = vec3(0.0, 1.0, 0.0);
-
-然后就可以得出摄像机的发向是
-
-    vec3 cameraDir = normalize(cameraTarget - cameraOrigin);
-
-由此可以计算出摄像机的右方向和顶上的方向。
-
-    vec3 cameraRight = normalize(cross(upDirection, cameraOrigin));
-    vec3 cameraUp = cross(cameraDir, cameraRight);
-
-下面对屏幕坐标进行转化，把屏幕坐标放缩到-1到1之间。
-
-    vec2 screenPos = -1.0 + 2.0 * gl_FragCoord.xy / iResolution.xy; // screenPos can range from -1 to 1
-    screenPos.x *= iResolution.x / iResolution.y; // Correct aspect ratio
-    
-在知道了摄像机的方向之后，我们来计算出ray的方向。
-
-    vec3 rayDir = normalize(cameraRight * screenPos.x + cameraUp * screenPos.y + cameraDir);
-
-## Raymarching loop
-
-在 marching 里面 先来设置步进的光线总长度 
-
-    const int MAX_ITER = 100; 
-物体的离摄像机的最大范围 
-
-    const float MAX_DIST = 20.0;
-设置物体离光线的阈值距离
-
-    const float EPSILON = 0.001;
-    
-下面是loop的代码：在个里面点会被转化为和交集的东西。
-
-     // The raymarching loop
-    float totalDist = 0.0;
-    vec3 pos = cameraOrigin;
-    float dist = EPSILON;
-    
-    // trying to find a point of intersection 
-    for (int i = 0; i < MAX_ITER; i++)
-    {
-        // Either we've hit the object or hit nothing at all, either way we should break out of the loop
-        if (dist < EPSILON || totalDist > MAX_DIST)
-        break; // If you use windows and the shader isn't working properly, change this to continue;
-    
-        dist = distfunc(pos); // Evalulate the distance at the current point
-        totalDist += dist;
-        pos += dist * rayDir; // Advance the point forwards in the ray direction by the distance
-    }
-##  定义显示的模型
-
-    float sphere(vec3 pos, float radius)
-    {
-    	return length(pos) - radius;
-    }
-    
-    float box(vec3 pos, vec3 size)
-    {
-        return length(max(abs(pos) - size, 0.0));
+    // read len
+    if _, err := io.ReadFull(conn, bufMsgLen); err != nil {
+        return nil, err
     }
 
-## 定义一下Lighting
-光也要在EPSILON的距离里面
-
-    if (dist < EPSILON)
-    {
-        // Lighting code
+    // parse len
+    var msgLen uint32
+    switch p.lenMsgLen {
+    case 1:
+        msgLen = uint32(bufMsgLen[0])
+    case 2:
+        if p.littleEndian {
+            msgLen = uint32(binary.LittleEndian.Uint16(bufMsgLen))
+        } else {
+            msgLen = uint32(binary.BigEndian.Uint16(bufMsgLen))
+        }
+    case 4:
+        if p.littleEndian {
+            msgLen = binary.LittleEndian.Uint32(bufMsgLen)
+        } else {
+            msgLen = binary.BigEndian.Uint32(bufMsgLen)
+        }
     }
-    else
-    {
-    	gl_FragColor = vec4(0.0);
+
+    //check len
+    if msgLen>p.maxMsgLen{
+        return nil,errors.New("message too long")
+    } else if msgLen < p.minMsgLen {
+        return nil, errors.New("message too short")
+    }
+    msgData := make([]byte, msgLen)
+    if _, err := io.ReadFull(conn, msgData); err != nil {
+        return nil, err
+    }
+    return msgData,nil
+}
+
+```
+
+Write 函数里面先对大小端判断处理，然后对其长度也做了些处理，最后还是在coon写入到coon里面，这里就是tcp_coon的write里面。
+```go
+// goroutine safe
+func (p *MsgParser) Write(conn *TCPConn, args ...[]byte) error {
+    // get len
+    var msgLen uint32
+    for i := 0; i < len(args); i++ {
+        msgLen += uint32(len(args[i]))
+    }
+    // check len
+    if msgLen > p.maxMsgLen {
+        return nil
+    } else if msgLen < p.minMsgLen {
+        return nil
     }
 
-光函数里面需要取得表面着色器的normal向量,可以用点来预计算出点的位置。
+    msg := make([]byte, uint32(p.lenMsgLen)+msgLen)
 
-    vec2 eps = vec2(0.0, EPSILON);
-    vec3 normal = normalize(vec3(
-    	distfunc(pos + eps.yxx) - distfunc(pos - eps.yxx),
-    	distfunc(pos + eps.xyx) - distfunc(pos - eps.xyx),
-    	distfunc(pos + eps.xxy) - distfunc(pos - eps.xxy)));
+    // write len
+    switch p.lenMsgLen {
+    case 1:
+        msg[0] = byte(msgLen)
+    case 2:
+        if p.littleEndian {
+            binary.LittleEndian.PutUint16(msg, uint16(msgLen))
+        } else {
+            binary.BigEndian.PutUint16(msg, uint16(msgLen))
+        }
+    case 4:
+        if p.littleEndian {
+            binary.LittleEndian.PutUint32(msg, msgLen)
+        } else {
+            binary.BigEndian.PutUint32(msg, msgLen)
+        }
+    }
+    // write data
+    l := p.lenMsgLen
+    for i := 0; i < len(args); i++ {
+        copy(msg[l:], args[i])
+        l += len(args[i])
+    }
 
-由光照公式可以得出
+    conn.Write(msg)  //最后将msg发送出去
 
-      fragColor = vec4(ambientColor +
-                          lambertian * diffuseColor +
-                          specular * specColor, 1.0);
+    return nil
 
-[shadertoy 查看][1]
+}
+```
+大概上面的流程就是这个样子。
+![在这里插入图片描述](https://img-blog.csdnimg.cn/20181216185616280.png)
 
 
-  [1]: https://www.shadertoy.com/view/MtdfRs
+
+
+## tcp_server脚本
+
+tcp_server 里面启动是由gate模块的gate启动的，然后在由Start进行开始。
+
+Start函数先初始化一个init函数,然后让server 在线程里面运行。init 里面限定连接数和最大pending数量。
+```go
+func (server *TCPServer) Start() {
+    server.init()
+    go server.run()
+}
+
+func (server *TCPServer) init() {
+    ln, err := net.Listen("tcp", server.Addr)
+    if err != nil {
+        log.Fatal("%v", err)
+    }
+
+    if server.MaxConnNum <= 0 {
+        server.MaxConnNum = 100
+        log.Info("invalid MaxConnNum,reset to %v", server.MaxConnNum)
+    }
+    if server.PendingWriteNum <= 0 {
+        server.PendingWriteNum = 100
+        log.Info("invalid PendingWriteNum, reset to %v", server.PendingWriteNum)
+    }
+    if server.NewAgent == nil {
+        log.Fatal("NewAgent must not be nil")
+    }
+
+    server.ln = ln
+    server.conns = make(ConnSet)
+
+    // msg parser
+    msgParser := NewMsgParser()
+    msgParser.SetMsgLen(server.LenMsgLen, server.MinMsgLen, server.MaxMsgLen)
+    msgParser.SetByteOrder(server.LittleEndian)
+    server.msgParser = msgParser
+}
+```
+
+在Run函数里面，把conn放在conns来同时管理。同时在这里生产Agent，同时agent.run然后是在agent中处理的。
+
+```go
+func (server *TCPServer) run() {
+    server.wgLn.Add(1)
+    defer server.wgLn.Done()
+
+    var tempDelay time.Duration
+
+    for {
+        conn, err := server.ln.Accept()
+        if err != nil {
+            if ne, ok := err.(net.Error); ok && ne.Temporary() {
+                if tempDelay == 0 {
+                    tempDelay = 5 * time.Millisecond
+                } else {
+                    tempDelay *= 2
+                }
+                if max := 1 * time.Second; tempDelay > max {
+                    tempDelay = max
+                }
+                log.Info("accept error: %v; retrying in %v", err, tempDelay)
+                time.Sleep(tempDelay)
+                continue
+            }
+            return
+        }
+        tempDelay = 0
+
+        server.mutexConns.Lock()
+        if len(server.conns) >= server.MaxConnNum {
+            server.mutexConns.Unlock()
+            conn.Close()
+            log.Debug("too many connections")
+            continue
+        }
+        //将conn放入conns中，用于后期close的处理
+        server.conns[conn] = struct{}{}
+        server.mutexConns.Unlock()
+
+        server.wgConns.Add(1)
+
+        tcpConn := newTCPCoon(conn, server.PendingWriteNum, server.msgParser)
+        fmt.Println("new conn  from ", tcpConn.RemoteAddr())
+        agent := server.NewAgent(tcpConn) //将tcpconn生成agent
+
+        go func() {
+            agent.Run()
+
+            //cleanup
+            tcpConn.Close()
+            server.mutexConns.Lock()
+            delete(server.conns, conn)
+            server.mutexConns.Unlock()
+            agent.OnClose()
+
+            server.wgConns.Done()
+        }()
+    }
+}
+```
+大致主要的流程如下图。
+![在这里插入图片描述](https://img-blog.csdnimg.cn/20181216191928919.png)
+
+下面我模仿了一个grpc的go框架
+[go框架]("https://github.com/xiaogeformax/MagicseaServer")
